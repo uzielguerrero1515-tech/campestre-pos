@@ -578,7 +578,7 @@ function DescuentoModal({ cuenta, employees, onConfirm, onClose }) {
 }
 
 // ─── CUENTA DETAIL ───────────────────────────────────────────────────────────
-function CuentaDetail({ cuenta, menu, currentUser, employees, onBack, onUpdate, onCobrar, onEliminarProductos, onDescuento }) {
+function CuentaDetail({ cuenta, menu, currentUser, employees, onBack, onUpdate, onCobrar, onEliminarProductos, onDescuento, onCerrarCuenta }) {
   const [activeSection,  setActiveSection]  = useState(menu[0]?.id);
   const [pendingItems,   setPendingItems]   = useState([]);
   const [tortaModal,     setTortaModal]     = useState(null);
@@ -587,6 +587,7 @@ function CuentaDetail({ cuenta, menu, currentUser, employees, onBack, onUpdate, 
   const [descuentoModal, setDescuentoModal] = useState(false);
   const [cobrarModal,    setCobrarModal]    = useState(false);
   const [eliminarModal,  setEliminarModal]  = useState(false);
+  const [cerrarModal,    setCerrarModal]    = useState(false);
   const comandaRef = useRef(null);
 
   const currentSection = menu.find(s => s.id === activeSection);
@@ -739,16 +740,23 @@ function CuentaDetail({ cuenta, menu, currentUser, employees, onBack, onUpdate, 
           </div>
           <div style={{ fontSize: 20, fontWeight: 800, color: C.gold }}>Total: ${neta.toFixed(0)}</div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          <button style={{ ...btn(C.green), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
-            onClick={() => { if (allSentItems.length === 0) return alert("Sin productos enviados"); setCobrarModal(true); }}>
-            💰 Cobrar
+        {allSentItems.length === 0 ? (
+          <button style={{ ...btn(C.darkRed), padding: "13px 0", fontSize: 14, width: "100%", borderRadius: 10 }}
+            onClick={() => setCerrarModal(true)}>
+            🚫 Cerrar cuenta vacía
           </button>
-          <button style={{ ...btn(C.purple), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
-            onClick={() => setDescuentoModal(true)}>% Desc.</button>
-          <button style={{ ...btn("#444"), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
-            onClick={() => { if (allSentItems.length === 0) return alert("Sin productos para eliminar"); setEliminarModal(true); }}>🗑️ Eliminar</button>
-        </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <button style={{ ...btn(C.green), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
+              onClick={() => setCobrarModal(true)}>
+              💰 Cobrar
+            </button>
+            <button style={{ ...btn(C.purple), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
+              onClick={() => setDescuentoModal(true)}>% Desc.</button>
+            <button style={{ ...btn("#444"), padding: "12px 0", fontSize: 13, borderRadius: 10 }}
+              onClick={() => setEliminarModal(true)}>🗑️ Eliminar</button>
+          </div>
+        )}
       </div>
 
       {/* Modals */}
@@ -764,6 +772,19 @@ function CuentaDetail({ cuenta, menu, currentUser, employees, onBack, onUpdate, 
       {eliminarModal && <EliminarProductosModal cuenta={cuenta} employees={employees}
         onConfirm={data => { setEliminarModal(false); onEliminarProductos(data); }}
         onClose={() => setEliminarModal(false)} />}
+      {cerrarModal && (
+        <div style={overlay}><div style={mbox(C.darkRed)}>
+          <div style={mTitle(C.red)}>Cerrar cuenta vacía</div>
+          <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 20 }}>
+            La Cuenta {pad(cuenta.num)} no tiene productos.<br/>¿Cerrarla y eliminarla?
+          </div>
+          <button style={{ ...btn(C.darkRed), padding: "14px 0", fontSize: 15, width: "100%", borderRadius: 12, marginBottom: 10 }}
+            onClick={() => { setCerrarModal(false); onCerrarCuenta(); }}>
+            Sí, cerrar cuenta
+          </button>
+          <button style={cancelBtn} onClick={() => setCerrarModal(false)}>Cancelar</button>
+        </div></div>
+      )}
     </div>
   );
 }
@@ -805,6 +826,9 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
   const [editProduct, setEditProduct] = useState(null); // {secId, id, name, price}
   // Delete confirmation with owner PIN: {kind:'product'|'section', secId, id, label}
   const [deleteTarget, setDeleteTarget] = useState(null);
+  // Owner PIN change
+  const [editingOwnerPin, setEditingOwnerPin] = useState(false);
+  const [ownerNewPin,     setOwnerNewPin]     = useState("");
 
   const handleBuscar = () => setActiveDate(pickedDate);
 
@@ -1054,14 +1078,39 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
         {tab === "empleados" && <>
           <div style={{ fontWeight: 700, color: C.red, marginBottom: 12 }}>Empleados</div>
           {employees.map(e => (
-            <div key={e.id} style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${C.border}` }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{e.name}</div>
-                <div style={{ fontSize: 12, color: C.muted }}>PIN: {e.pin} {e.isOwner && <span style={{ background: C.red, borderRadius: 6, padding: "1px 6px", fontSize: 10, marginLeft: 4 }}>Dueño</span>}</div>
+            <div key={e.id} style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 10, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{e.name}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>PIN: {e.pin} {e.isOwner && <span style={{ background: C.red, borderRadius: 6, padding: "1px 6px", fontSize: 10, marginLeft: 4 }}>Dueño</span>}</div>
+                </div>
+                {e.isOwner ? (
+                  <button style={{ ...btn(C.blue), padding: "6px 12px", fontSize: 12, borderRadius: 8 }}
+                    onClick={() => { setEditingOwnerPin(true); setOwnerNewPin(""); }}>Cambiar PIN</button>
+                ) : (
+                  <button style={{ ...btn(C.darkRed), padding: "6px 12px", fontSize: 12, borderRadius: 8 }}
+                    onClick={() => setEmployees(prev => prev.filter(x => x.id !== e.id))}>Eliminar</button>
+                )}
               </div>
-              {!e.isOwner && (
-                <button style={{ ...btn(C.darkRed), padding: "6px 12px", fontSize: 12, borderRadius: 8 }}
-                  onClick={() => setEmployees(prev => prev.filter(x => x.id !== e.id))}>Eliminar</button>
+              {e.isOwner && editingOwnerPin && (
+                <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+                  <div style={{ fontSize: 13, color: C.blue, fontWeight: 700, marginBottom: 8 }}>Nuevo PIN del dueño</div>
+                  <input style={inp} type="number" placeholder="Nuevo PIN (4-6 dígitos)"
+                    value={ownerNewPin} onChange={ev => setOwnerNewPin(ev.target.value)} />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...btn(C.blue), padding: "11px 0", fontSize: 14, flex: 1, borderRadius: 10 }}
+                      onClick={() => {
+                        const p = ownerNewPin.trim();
+                        if (!p || p.length < 4) return alert("El PIN debe tener mínimo 4 dígitos");
+                        if (employees.find(x => !x.isOwner && x.pin === p)) return alert("Ese PIN ya lo usa un empleado");
+                        setEmployees(prev => prev.map(x => x.isOwner ? { ...x, pin: p } : x));
+                        setOwnerNewPin(""); setEditingOwnerPin(false);
+                        alert("PIN del dueño actualizado ✓");
+                      }}>Guardar</button>
+                    <button style={{ ...btn("#444"), padding: "11px 0", fontSize: 14, flex: 1, borderRadius: 10 }}
+                      onClick={() => { setEditingOwnerPin(false); setOwnerNewPin(""); }}>Cancelar</button>
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -1244,13 +1293,21 @@ export default function App() {
     });
 
     const unsubMenu = onSnapshot(menuCol, async (snap) => {
-      if (snap.empty) {
-        // First run ever: seed default menu into Firestore
-        for (const sec of INITIAL_MENU) {
-          await setDoc(doc(menuCol, sec.id), sec);
-        }
-      } else {
-        setMenu(snap.docs.map(d => d.data()));
+      const existing   = snap.docs.map(d => d.data());
+      const existingIds = new Set(existing.map(s => s.id));
+      const missing    = INITIAL_MENU.filter(s => !existingIds.has(s.id));
+      // Always update state with whatever we already have (even during seeding)
+      if (existing.length > 0) {
+        const order = INITIAL_MENU.map(s => s.id);
+        setMenu([...existing].sort((a, b) => {
+          const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        }));
+      }
+      // Seed any sections missing from Firestore (handles race-condition on first run)
+      if (missing.length > 0) {
+        for (const sec of missing) await setDoc(doc(menuCol, sec.id), sec);
+        // next onSnapshot will fire and include the new sections
       }
       ready.m = true; checkReady();
     });
@@ -1354,6 +1411,14 @@ export default function App() {
     setSelectedCuenta(null);
     setScreen("cuentas");
     fsAddLog({ type: "cobro", date: todayStr(), time: nowStr(), cuentaNum: cuenta.num, by: currentUser.name, items: allItems, bruta, neta, pago });
+    fsRemoveCuenta(cuenta.id);
+  };
+
+  const handleCerrarCuenta = () => {
+    const cuenta = selectedCuenta;
+    setSelectedCuenta(null);
+    setScreen("cuentas");
+    fsAddLog({ type: "cancel", date: todayStr(), time: nowStr(), cuentaNum: cuenta.num, by: currentUser.name, motivo: "Cuenta vacía cerrada" });
     fsRemoveCuenta(cuenta.id);
   };
 
@@ -1465,7 +1530,8 @@ export default function App() {
       onUpdate={handleUpdateCuenta}
       onCobrar={handleCobrar}
       onEliminarProductos={handleEliminarProductos}
-      onDescuento={handleDescuento} />
+      onDescuento={handleDescuento}
+      onCerrarCuenta={handleCerrarCuenta} />
   );
 
   // CUENTAS LIST — each user sees only their own open accounts
