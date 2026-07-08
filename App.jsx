@@ -111,6 +111,19 @@ const prettyDate = (iso) => {
   return `${d}/${m}/${y}`;
 };
 
+// ── MONTH HELPERS (for the monthly accumulation) ─────────────────────────────
+// A "month key" is yyyy-mm. Everything is grouped by the BUSINESS date already
+// stored on each log (the jornada's opening date), so a sale rung up after
+// midnight still counts in the month its session opened.
+const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const monthKey  = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; // yyyy-mm
+const thisMonth = () => monthKey();
+const prettyMonth = (mk) => {
+  if (!mk) return "";
+  const [y, m] = mk.split("-");
+  return `${MESES[Number(m) - 1]} ${y}`;
+};
+
 // ─── PALETTE ─────────────────────────────────────────────────────────────────
 const C = {
   red: "#E74C3C", darkRed: "#922B21", gold: "#FFD700", green: "#27AE60",
@@ -831,8 +844,13 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
   // Owner PIN change
   const [editingOwnerPin, setEditingOwnerPin] = useState(false);
   const [ownerNewPin,     setOwnerNewPin]     = useState("");
-  // NEW: confirm the manual day close
-  const [confirmCorte, setConfirmCorte] = useState(false);
+  // NEW: manual day close — requires owner PIN, then a final confirm.
+  // corteStep: null → "pin" (asks owner PIN) → "confirm" (final yes/no)
+  const [corteStep, setCorteStep] = useState(null);
+  const [cortePin,  setCortePin]  = useState("");
+  // NEW: month picker for the monthly accumulation tab (yyyy-mm)
+  const [pickedMonth, setPickedMonth] = useState(thisMonth());
+  const [activeMonth, setActiveMonth] = useState(thisMonth());
 
   const handleBuscar = () => setActiveDate(pickedDate);
 
@@ -866,6 +884,40 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
     productStats[i.name].total += i.price * i.qty;
   }));
 
+  // Ranking del día (más vendido primero) + estrella del día
+  const dayRanking = Object.entries(productStats).sort((a, b) => b[1].qty - a[1].qty);
+  const estrellaDia = dayRanking[0]; // [name, {qty,total}] o undefined
+
+  // ── ACUMULADO MENSUAL (por fecha de negocio) ─────────────────────────────
+  // Toma cada log cuyo `date` (fecha de apertura de la jornada) cae en el mes
+  // seleccionado. Así "Julio" es todo lo abierto en julio, aunque se haya
+  // cobrado ya de madrugada del día siguiente.
+  const inMonth = (iso) => typeof iso === "string" && iso.slice(0, 7) === activeMonth;
+  const monthOrders = logs.filter(l => l.type === "cobro"     && inMonth(l.date));
+  const monthDescs  = logs.filter(l => l.type === "descuento" && inMonth(l.date));
+
+  const mBruta         = monthOrders.reduce((s, o) => s + (o.bruta || 0), 0);
+  const mNeta          = monthOrders.reduce((s, o) => s + (o.neta  || 0), 0);
+  const mEfectivo      = monthOrders.reduce((s, o) => s + (o.pago?.efectivo || 0), 0);
+  const mTarjeta       = monthOrders.reduce((s, o) => s + (o.pago?.tarjeta || 0), 0);
+  const mTransferencia = monthOrders.reduce((s, o) => s + (o.pago?.transferencia || 0), 0);
+  const mPropinas      = monthOrders.reduce((s, o) => s + (o.pago?.propina || 0), 0);
+  const mDescuentos    = mBruta - mNeta; // lo que se dejó de cobrar en el mes
+  // Cortesías / descuentos autorizados registrados en el mes (conteo)
+  const mCortesias     = monthDescs.length;
+  // Días con venta en el mes (para promedio)
+  const mDiasConVenta  = new Set(monthOrders.map(o => o.date)).size;
+
+  // Acumulado por producto en el mes + estrella del mes
+  const monthProductStats = {};
+  monthOrders.forEach(o => (o.items || []).forEach(i => {
+    if (!monthProductStats[i.name]) monthProductStats[i.name] = { qty: 0, total: 0 };
+    monthProductStats[i.name].qty   += i.qty;
+    monthProductStats[i.name].total += i.price * i.qty;
+  }));
+  const monthRanking = Object.entries(monthProductStats).sort((a, b) => b[1].qty - a[1].qty);
+  const estrellaMes  = monthRanking[0];
+
   // Movements filtered to activeDate (resumen + productos use it; movimientos shows all but highlighted)
   const dayLogs = logs.filter(l => l.date === activeDate);
 
@@ -873,6 +925,38 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
     <div style={{ background: C.card2, borderRadius: 12, padding: 14 }}>
       <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 800, color: color || C.gold }}>{value}</div>
+    </div>
+  );
+
+  // Selector de mes (usado por la pestaña Mensual)
+  const MonthPicker = () => (
+    <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
+      <input
+        type="month"
+        style={{ ...inp, marginBottom: 0, flex: 1, cursor: "pointer", colorScheme: "dark" }}
+        value={pickedMonth}
+        onChange={e => setPickedMonth(e.target.value)}
+        onClick={e => { try { e.target.showPicker && e.target.showPicker(); } catch (_) {} }}
+        onFocus={e => { try { e.target.showPicker && e.target.showPicker(); } catch (_) {} }}
+      />
+      <button style={{ ...btn(C.red), padding: "10px 18px", fontSize: 14, borderRadius: 10, whiteSpace: "nowrap" }}
+        onClick={() => setActiveMonth(pickedMonth)}>Buscar</button>
+    </div>
+  );
+
+  // Fila de estrella (día o mes) reutilizable
+  const EstrellaCard = ({ label, data }) => (
+    <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 14, border: `2px solid ${C.gold}` }}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{label}</div>
+      {data ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: C.gold }}>⭐ {data[0]}</div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{data[1].qty} pzs</div>
+            <div style={{ fontSize: 12, color: C.muted }}>${data[1].total}</div>
+          </div>
+        </div>
+      ) : <div style={{ fontSize: 13, color: "#555" }}>Sin ventas aún</div>}
     </div>
   );
 
@@ -902,7 +986,7 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
       </div>
 
       <div style={{ display: "flex", overflowX: "auto", gap: 8, padding: "10px 16px", background: "#161616" }}>
-        {["resumen","productos","movimientos","empleados","menu"].map(t => (
+        {["resumen","productos","mensual","movimientos","empleados","menu"].map(t => (
           <button key={t} style={{ ...btn(tab === t ? C.red : "#2a2a2a"), padding: "8px 14px", fontSize: 12, borderRadius: 10, whiteSpace: "nowrap" }}
             onClick={() => setTab(t)}>{t.charAt(0).toUpperCase() + t.slice(1)}</button>
         ))}
@@ -947,7 +1031,7 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
               <button
                 disabled={pendientes.length > 0}
                 style={{ ...btn(pendientes.length > 0 ? "#444" : C.darkRed), padding: "14px 0", fontSize: 15, width: "100%", borderRadius: 12, opacity: pendientes.length > 0 ? 0.5 : 1, cursor: pendientes.length > 0 ? "not-allowed" : "pointer" }}
-                onClick={() => { if (pendientes.length === 0) setConfirmCorte(true); }}>
+                onClick={() => { if (pendientes.length === 0) { setCortePin(""); setCorteStep("pin"); } }}>
                 ✂️ Hacer corte del día
               </button>
             </> : (
@@ -1035,12 +1119,14 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
 
         {tab === "productos" && <>
           <DatePicker />
+          <EstrellaCard label={`Producto estrella — ${prettyDate(activeDate)}`} data={estrellaDia} />
           <div style={{ background: C.card, borderRadius: 14, padding: 14, border: `1px solid ${C.border}` }}>
-            <div style={{ fontWeight: 700, color: C.red, marginBottom: 10 }}>Vendido — {prettyDate(activeDate)}</div>
-            {Object.keys(productStats).length === 0
+            <div style={{ fontWeight: 700, color: C.red, marginBottom: 10 }}>Ranking del día — {prettyDate(activeDate)}</div>
+            {dayRanking.length === 0
               ? <div style={{ color: "#555", fontSize: 13 }}>Sin ventas este día</div>
-              : Object.entries(productStats).sort((a, b) => b[1].qty - a[1].qty).map(([name, s]) => (
-                <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
+              : dayRanking.map(([name, s], idx) => (
+                <div key={name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
+                  <span style={{ color: idx === 0 ? C.gold : C.muted, fontWeight: 700, minWidth: 22 }}>{idx + 1}º</span>
                   <span style={{ flex: 1 }}>{name}</span>
                   <span style={{ color: C.orange, marginRight: 12 }}>{s.qty} pzs</span>
                   <span style={{ color: C.gold }}>${s.total}</span>
@@ -1062,6 +1148,52 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
               })()}
             </div>
           )}
+        </>}
+
+        {tab === "mensual" && <>
+          <MonthPicker />
+          <div style={{ fontSize: 15, fontWeight: 800, color: "#fff", marginBottom: 12 }}>
+            Acumulado de {prettyMonth(activeMonth)}
+          </div>
+
+          {/* Estrella del mes */}
+          <EstrellaCard label={`Producto estrella — ${prettyMonth(activeMonth)}`} data={estrellaMes} />
+
+          {/* Totales del mes */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <Stat label="Venta Bruta"      value={`$${mBruta.toFixed(0)}`}         color={C.red} />
+            <Stat label="Venta Neta"       value={`$${mNeta.toFixed(0)}`}          color={C.green} />
+            <Stat label="Descuentos"       value={`$${mDescuentos.toFixed(0)}`}    color={C.purple} />
+            <Stat label="Cortesías"        value={mCortesias}                      color={C.purple} />
+            <Stat label="Efectivo"         value={`$${mEfectivo.toFixed(0)}`}      color={C.blue} />
+            <Stat label="Tarjeta"          value={`$${mTarjeta.toFixed(0)}`}       color={C.purple} />
+            <Stat label="Transferencia"    value={`$${mTransferencia.toFixed(0)}`} color={C.orange} />
+            <Stat label="Propinas"         value={`$${mPropinas.toFixed(0)}`}      color={C.gold} />
+            <Stat label="Cuentas cobradas" value={monthOrders.length}              color="#fff" />
+            <Stat label="Días con venta"   value={mDiasConVenta}                   color="#fff" />
+          </div>
+
+          {mDiasConVenta > 0 && (
+            <div style={{ background: C.card2, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>Promedio por día con venta</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>${(mNeta / mDiasConVenta).toFixed(0)}</div>
+            </div>
+          )}
+
+          {/* Ranking mensual por producto */}
+          <div style={{ background: C.card, borderRadius: 14, padding: 14, border: `1px solid ${C.border}` }}>
+            <div style={{ fontWeight: 700, color: C.red, marginBottom: 10 }}>Acumulado por producto — {prettyMonth(activeMonth)}</div>
+            {monthRanking.length === 0
+              ? <div style={{ color: "#555", fontSize: 13 }}>Sin ventas este mes</div>
+              : monthRanking.map(([name, s], idx) => (
+                <div key={name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
+                  <span style={{ color: idx === 0 ? C.gold : C.muted, fontWeight: 700, minWidth: 22 }}>{idx + 1}º</span>
+                  <span style={{ flex: 1 }}>{name}</span>
+                  <span style={{ color: C.orange, marginRight: 12 }}>{s.qty} pzs</span>
+                  <span style={{ color: C.gold }}>${s.total}</span>
+                </div>
+              ))}
+          </div>
         </>}
 
         {tab === "movimientos" && <>
@@ -1308,10 +1440,25 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
         />
       )}
 
-      {/* ── CONFIRMAR CORTE DEL DÍA ─────────────────────────────────────── */}
-      {confirmCorte && jornadaActiva && (
+      {/* ── CORTE DEL DÍA: paso 1 PIN de dueño ──────────────────────────── */}
+      {corteStep === "pin" && jornadaActiva && (
         <div style={overlay}><div style={mbox(C.darkRed)}>
-          <div style={mTitle(C.red)}>Cerrar corte del día</div>
+          <div style={mTitle(C.red)}>Clave de dueño para el corte</div>
+          <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 14 }}>
+            Confirma con tu PIN de dueño para cerrar el día.
+          </div>
+          <NumPad value={cortePin} onChange={setCortePin} onEnter={() => {
+            if (employees.find(e => e.pin === cortePin && e.isOwner)) { setCortePin(""); setCorteStep("confirm"); }
+            else { setCortePin(""); alert("PIN de dueño incorrecto"); }
+          }} />
+          <button style={cancelBtn} onClick={() => { setCorteStep(null); setCortePin(""); }}>Cancelar</button>
+        </div></div>
+      )}
+
+      {/* ── CORTE DEL DÍA: paso 2 confirmación final ────────────────────── */}
+      {corteStep === "confirm" && jornadaActiva && (
+        <div style={overlay}><div style={mbox(C.darkRed)}>
+          <div style={mTitle(C.red)}>¿Finalizar día?</div>
           <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 8 }}>
             Se cerrará la jornada del <b style={{ color: "#fff" }}>{prettyDate(jornada.date)}</b> (abierta {jornada.abiertaHora}).
           </div>
@@ -1319,8 +1466,8 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jor
             Todas las ventas quedan guardadas en ese día. La próxima cuenta que se abra iniciará una jornada nueva.
           </div>
           <button style={{ ...btn(C.darkRed), padding: "14px 0", fontSize: 15, width: "100%", borderRadius: 12, marginBottom: 10 }}
-            onClick={() => { setConfirmCorte(false); onCorte(); }}>Sí, hacer corte del día</button>
-          <button style={cancelBtn} onClick={() => setConfirmCorte(false)}>Cancelar</button>
+            onClick={() => { setCorteStep(null); onCorte(); }}>Sí, hacer corte del día</button>
+          <button style={cancelBtn} onClick={() => setCorteStep(null)}>Cancelar</button>
         </div></div>
       )}
     </div>
