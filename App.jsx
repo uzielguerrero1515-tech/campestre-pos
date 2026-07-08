@@ -17,11 +17,13 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
 
-// Firestore collection refs — everything lives under these four collections
+// Firestore collection refs — everything lives under these collections
 const cuentasCol   = collection(db, "cuentas");
 const logsCol      = collection(db, "logs");
 const employeesCol = collection(db, "employees");
 const menuCol       = collection(db, "menu");
+// NEW: business-day state (the current open "jornada"). One doc: "jornada".
+const estadoCol     = collection(db, "estado");
 
 // ─── MENU ────────────────────────────────────────────────────────────────────
 const INITIAL_MENU = [
@@ -85,7 +87,7 @@ const dayKey = (d = new Date()) => {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 };
-const todayStr  = () => dayKey();              // canonical day key (yyyy-mm-dd)
+const todayStr  = () => dayKey();              // canonical calendar day key (yyyy-mm-dd)
 const todayISO  = () => dayKey();              // same, for <input type=date>
 const nowStr    = () => new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
 const pad       = n  => String(n).padStart(2, "0");
@@ -811,7 +813,7 @@ function DeletePinModal({ target, employees, onConfirm, onClose }) {
 }
 
 // ─── OWNER PANEL ─────────────────────────────────────────────────────────────
-function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, todayKey, onBack }) {
+function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, jornada, onCorte, onBack }) {
   const [tab, setTab]               = useState("resumen");
   // Date filter: picked ISO date in the input, activeDate applied on Buscar
   const [pickedDate,  setPickedDate]  = useState(todayISO());
@@ -829,12 +831,17 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
   // Owner PIN change
   const [editingOwnerPin, setEditingOwnerPin] = useState(false);
   const [ownerNewPin,     setOwnerNewPin]     = useState("");
+  // NEW: confirm the manual day close
+  const [confirmCorte, setConfirmCorte] = useState(false);
 
   const handleBuscar = () => setActiveDate(pickedDate);
 
-  // Pending (uncobradas) accounts across ALL users — live
+  // ── JORNADA ACTIVA: pending (uncobradas) accounts of the CURRENT session ──
+  // The "day" is no longer the calendar date — it's the open jornada. Accounts
+  // stay in the current session even past midnight, until the owner does corte.
+  const jornadaActiva = !!jornada?.activa;
   const pendientes = (cuentas || [])
-    .filter(c => c.date === todayKey)
+    .filter(c => jornadaActiva && c.jornadaId === jornada.id)
     .sort((a, b) => a.num - b.num);
   const pendienteTotal = pendientes.reduce((s, c) => s + cuentaNeta(c), 0);
 
@@ -842,6 +849,7 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
   const dayCancels = logs.filter(l => l.type === "cancel"      && l.date === activeDate);
   const dayDescs   = logs.filter(l => l.type === "descuento"   && l.date === activeDate);
   const dayElims   = logs.filter(l => l.type === "eliminacion" && l.date === activeDate);
+  const dayCortes  = logs.filter(l => l.type === "corte"       && l.date === activeDate);
   const elimCount  = dayElims.reduce((s, l) => s + (l.items || []).reduce((a, i) => a + i.qty, 0), 0);
 
   const bruta         = dayOrders.reduce((s, o) => s + o.bruta, 0);
@@ -905,32 +913,49 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
         {tab === "resumen" && <>
           <DatePicker />
 
-          {/* Pendientes en tiempo real (solo del día de hoy) */}
-          {activeDate === todayKey && (
-            <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 14, border: `2px solid ${C.gold}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: pendientes.length ? 10 : 0 }}>
-                <div style={{ fontWeight: 800, color: C.gold, fontSize: 15 }}>⏳ Pendiente por cobrar</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{pendientes.length} cuenta{pendientes.length === 1 ? "" : "s"}</div>
+          {/* ── JORNADA / CORTE DEL DÍA ─────────────────────────────────── */}
+          <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 14, border: `2px solid ${jornadaActiva ? C.green : C.border}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800, color: jornadaActiva ? C.green : C.muted, fontSize: 15 }}>
+                {jornadaActiva ? "🟢 Jornada abierta" : "⚪ Sin jornada abierta"}
               </div>
-              {pendientes.length > 0 && <>
-                <div style={{ fontSize: 26, fontWeight: 900, color: C.gold, marginBottom: 10 }}>${pendienteTotal.toFixed(0)}</div>
-                {pendientes.map(c => {
-                  const t = cuentaNeta(c);
-                  return (
-                    <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <b style={{ color: C.gold }}>Cuenta {pad(c.num)}</b>
-                        <span style={{ background: C.gold, color: "#111", fontSize: 10, fontWeight: 800, borderRadius: 4, padding: "1px 5px" }}>PENDIENTE</span>
-                      </span>
-                      <span style={{ color: C.muted }}>{c.abiertaPor}</span>
-                      <span style={{ color: "#fff", fontWeight: 700 }}>${t.toFixed(0)}</span>
-                    </div>
-                  );
-                })}
-              </>}
-              {pendientes.length === 0 && <div style={{ fontSize: 13, color: C.muted, marginTop: 8 }}>No hay cuentas pendientes</div>}
+              {jornadaActiva && <div style={{ fontSize: 12, color: C.muted }}>Abierta {jornada.abiertaHora} · {prettyDate(jornada.date)}</div>}
             </div>
-          )}
+
+            {jornadaActiva ? <>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>
+                {pendientes.length > 0
+                  ? `Hay ${pendientes.length} cuenta${pendientes.length === 1 ? "" : "s"} sin cobrar. Cóbralas o ciérralas antes de hacer el corte.`
+                  : "Todas las cuentas están cobradas. Ya puedes cerrar el corte del día."}
+              </div>
+
+              {pendientes.length > 0 && <>
+                <div style={{ fontSize: 22, fontWeight: 900, color: C.gold, marginBottom: 8 }}>Pendiente: ${pendienteTotal.toFixed(0)}</div>
+                {pendientes.map(c => (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <b style={{ color: C.gold }}>Cuenta {pad(c.num)}</b>
+                      <span style={{ background: C.gold, color: "#111", fontSize: 10, fontWeight: 800, borderRadius: 4, padding: "1px 5px" }}>PENDIENTE</span>
+                    </span>
+                    <span style={{ color: C.muted }}>{c.abiertaPor}</span>
+                    <span style={{ color: "#fff", fontWeight: 700 }}>${cuentaNeta(c).toFixed(0)}</span>
+                  </div>
+                ))}
+                <div style={{ height: 12 }} />
+              </>}
+
+              <button
+                disabled={pendientes.length > 0}
+                style={{ ...btn(pendientes.length > 0 ? "#444" : C.darkRed), padding: "14px 0", fontSize: 15, width: "100%", borderRadius: 12, opacity: pendientes.length > 0 ? 0.5 : 1, cursor: pendientes.length > 0 ? "not-allowed" : "pointer" }}
+                onClick={() => { if (pendientes.length === 0) setConfirmCorte(true); }}>
+                ✂️ Hacer corte del día
+              </button>
+            </> : (
+              <div style={{ fontSize: 13, color: C.muted }}>
+                La jornada iniciará sola cuando se abra la primera cuenta. Todo lo que se cobre —aunque pase de la medianoche— se guarda en el día en que abrió esa primera cuenta.
+              </div>
+            )}
+          </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
             <Stat label="Venta Bruta"      value={`$${bruta.toFixed(0)}`}         color={C.red} />
@@ -943,6 +968,23 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
             <Stat label="Cancelaciones"    value={dayCancels.length}              color={C.red} />
             <Stat label="Prod. eliminados" value={elimCount}                      color={C.orange} />
           </div>
+
+          {dayCortes.length > 0 && (
+            <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 12, border: `1px solid ${C.border}` }}>
+              <div style={{ fontWeight: 700, color: C.green, marginBottom: 8 }}>Cortes de este día</div>
+              {dayCortes.map((l, i) => (
+                <div key={i} style={{ padding: "8px 0", borderBottom: `1px solid #2a2a2a`, fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Corte {dayCortes.length > 1 ? `#${i + 1}` : ""} · {l.abiertaHora}–{l.cerradaHora}</span>
+                    <span style={{ color: C.gold, fontWeight: 700 }}>${(l.neta || 0).toFixed(0)}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                    {l.cobros || 0} cuentas · Efec ${l.efectivo?.toFixed(0) || 0} · Tarj ${l.tarjeta?.toFixed(0) || 0} · Transf ${l.transferencia?.toFixed(0) || 0}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {dayCancels.length > 0 && (
             <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 12, border: `1px solid ${C.border}` }}>
               <div style={{ fontWeight: 700, color: C.red, marginBottom: 8 }}>Cancelaciones</div>
@@ -1025,8 +1067,8 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
         {tab === "movimientos" && <>
           <DatePicker />
 
-          {/* Cuentas pendientes en tiempo real de TODOS los usuarios */}
-          {activeDate === todayKey && pendientes.length > 0 && (
+          {/* Cuentas pendientes en tiempo real de la jornada actual */}
+          {jornadaActiva && pendientes.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontWeight: 700, color: C.gold, marginBottom: 10 }}>⏳ En curso ahora ({pendientes.length})</div>
               {pendientes.map(c => {
@@ -1060,17 +1102,25 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
             : [...dayLogs].reverse().map((l, i) => (
               <div key={i} style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 10, border: `1px solid ${C.border}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ background: l.type === "cobro" ? C.green : l.type === "cancel" ? C.red : l.type === "eliminacion" ? C.orange : C.purple, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: l.type === "eliminacion" ? "#111" : "#fff" }}>{l.type}</span>
+                  <span style={{ background: l.type === "cobro" ? C.green : l.type === "cancel" ? C.red : l.type === "eliminacion" ? C.orange : l.type === "corte" ? C.blue : C.purple, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: l.type === "eliminacion" ? "#111" : "#fff" }}>{l.type}</span>
                   <span style={{ fontSize: 12, color: C.muted }}>{l.time}</span>
                 </div>
-                <div style={{ fontSize: 13 }}>Cuenta {pad(l.cuentaNum)} · <span style={{ color: C.muted }}>{l.by}</span></div>
-                {l.type === "eliminacion" && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Autoriza: {l.nombre}</div>}
-                {l.motivo && <div style={{ fontSize: 12, color: l.type === "eliminacion" ? C.orange : C.red,    marginTop: 4 }}>Motivo: {l.motivo}</div>}
-                {l.type === "descuento" && <div style={{ fontSize: 12, color: C.purple, marginTop: 4 }}>
-                  {l.scope === "cuenta" ? `Toda la cuenta −${l.globalPct}% (−$${l.monto?.toFixed(0)})` : l.items?.map(it => `${it.qty}×${it.name} −${it.descPct}%`).join(", ")} · {l.nombre}
-                </div>}
-                {l.neta   && <div style={{ fontSize: 13, color: C.gold,   marginTop: 4 }}>Neto: ${l.neta.toFixed(0)} · {l.pago?.metodo}</div>}
-                {l.items  && <div style={{ fontSize: 12, color: C.muted,  marginTop: 4 }}>{l.items.map(i => `${i.name}×${i.qty}`).join(", ")}</div>}
+                {l.type === "corte" ? (
+                  <div style={{ fontSize: 13 }}>
+                    <div>Corte del día · {l.abiertaHora}–{l.cerradaHora} · <span style={{ color: C.muted }}>{l.by}</span></div>
+                    <div style={{ fontSize: 13, color: C.gold, marginTop: 4 }}>Neto: ${(l.neta || 0).toFixed(0)} · {l.cobros || 0} cuentas</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Efec ${l.efectivo?.toFixed(0) || 0} · Tarj ${l.tarjeta?.toFixed(0) || 0} · Transf ${l.transferencia?.toFixed(0) || 0} · Prop ${l.propinas?.toFixed(0) || 0}</div>
+                  </div>
+                ) : <>
+                  <div style={{ fontSize: 13 }}>Cuenta {pad(l.cuentaNum)} · <span style={{ color: C.muted }}>{l.by}</span></div>
+                  {l.type === "eliminacion" && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Autoriza: {l.nombre}</div>}
+                  {l.motivo && <div style={{ fontSize: 12, color: l.type === "eliminacion" ? C.orange : C.red,    marginTop: 4 }}>Motivo: {l.motivo}</div>}
+                  {l.type === "descuento" && <div style={{ fontSize: 12, color: C.purple, marginTop: 4 }}>
+                    {l.scope === "cuenta" ? `Toda la cuenta −${l.globalPct}% (−$${l.monto?.toFixed(0)})` : l.items?.map(it => `${it.qty}×${it.name} −${it.descPct}%`).join(", ")} · {l.nombre}
+                  </div>}
+                  {l.neta   && <div style={{ fontSize: 13, color: C.gold,   marginTop: 4 }}>Neto: ${l.neta.toFixed(0)} · {l.pago?.metodo}</div>}
+                  {l.items  && <div style={{ fontSize: 12, color: C.muted,  marginTop: 4 }}>{l.items.map(i => `${i.name}×${i.qty}`).join(", ")}</div>}
+                </>}
               </div>
             ))}
         </>}
@@ -1257,6 +1307,22 @@ function OwnerPanel({ logs, employees, setEmployees, menu, setMenu, cuentas, tod
           onClose={() => setDeleteTarget(null)}
         />
       )}
+
+      {/* ── CONFIRMAR CORTE DEL DÍA ─────────────────────────────────────── */}
+      {confirmCorte && jornadaActiva && (
+        <div style={overlay}><div style={mbox(C.darkRed)}>
+          <div style={mTitle(C.red)}>Cerrar corte del día</div>
+          <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 8 }}>
+            Se cerrará la jornada del <b style={{ color: "#fff" }}>{prettyDate(jornada.date)}</b> (abierta {jornada.abiertaHora}).
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, textAlign: "center", marginBottom: 20 }}>
+            Todas las ventas quedan guardadas en ese día. La próxima cuenta que se abra iniciará una jornada nueva.
+          </div>
+          <button style={{ ...btn(C.darkRed), padding: "14px 0", fontSize: 15, width: "100%", borderRadius: 12, marginBottom: 10 }}
+            onClick={() => { setConfirmCorte(false); onCorte(); }}>Sí, hacer corte del día</button>
+          <button style={cancelBtn} onClick={() => setConfirmCorte(false)}>Cancelar</button>
+        </div></div>
+      )}
     </div>
   );
 }
@@ -1272,12 +1338,14 @@ export default function App() {
   const [pin,           setPin]           = useState("");
   const [abrirModal,    setAbrirModal]    = useState(false);
   const [loading,       setLoading]       = useState(true);
+  // NEW: current business day ("jornada"). activa=false means no open day.
+  const [jornada,       setJornada]       = useState({ activa: false, id: null, date: null, abiertaHora: null });
 
   // ── Real-time sync with Firestore. Each collection mirrors into local state
   // automatically whenever ANY device writes to it — that's how every tablet
   // and phone stays in sync live.
   useEffect(() => {
-    let ready = { e: false, m: false, l: false, c: false };
+    let ready = { e: false, m: false, l: false, c: false, j: false };
     const checkReady = () => { if (Object.values(ready).every(Boolean)) setLoading(false); };
 
     const unsubEmployees = onSnapshot(employeesCol, async (snap) => {
@@ -1322,7 +1390,14 @@ export default function App() {
       ready.c = true; checkReady();
     });
 
-    return () => { unsubEmployees(); unsubMenu(); unsubLogs(); unsubCuentas(); };
+    // NEW: the current jornada state (one shared doc across all devices)
+    const unsubEstado = onSnapshot(doc(estadoCol, "jornada"), (snap) => {
+      if (snap.exists()) setJornada(snap.data());
+      else setJornada({ activa: false, id: null, date: null, abiertaHora: null });
+      ready.j = true; checkReady();
+    });
+
+    return () => { unsubEmployees(); unsubMenu(); unsubLogs(); unsubCuentas(); unsubEstado(); };
   }, []);
 
   // Keep selectedCuenta pointing at the live version as cuentas update from Firestore
@@ -1340,6 +1415,7 @@ export default function App() {
   const fsUpdateCuenta = async (cuenta) => { await setDoc(doc(cuentasCol, String(cuenta.id)), clean(cuenta)); };
   const fsRemoveCuenta = async (id) => { await deleteDoc(doc(cuentasCol, String(id))); };
   const fsAddLog = async (log) => { await setDoc(doc(logsCol, String(Date.now()) + Math.random().toString(36).slice(2)), clean(log)); };
+  const fsSetJornada = async (j) => { await setDoc(doc(estadoCol, "jornada"), clean(j)); };
   const fsSetEmployees = async (next) => {
     // Diff against current employees: write changed/new, delete removed
     const nextIds = new Set(next.map(e => String(e.id)));
@@ -1370,13 +1446,15 @@ export default function App() {
     });
   };
 
-  // ── Global next account number: highest number across ALL cuentas today + 1
-  const todayCuentas = cuentas.filter(c => c.date === todayStr());
-  const maxNum       = todayCuentas.length > 0 ? Math.max(...todayCuentas.map(c => c.num)) : 0;
-  // Also check logs (paid accounts that are no longer in cuentas)
-  const todayLogs    = logs.filter(l => l.date === todayStr() && l.cuentaNum);
-  const maxLogNum    = todayLogs.length > 0 ? Math.max(...todayLogs.map(l => l.cuentaNum)) : 0;
-  const nextNum      = Math.max(maxNum, maxLogNum) + 1;
+  // ── Account numbering is now per SESSION (jornada), not per calendar day.
+  // Within one session the number keeps climbing (even past midnight); a fresh
+  // session after a corte starts back at 1.
+  const curJid = jornada?.activa ? jornada.id : null;
+  const sessionCuentas = cuentas.filter(c => c.jornadaId === curJid);
+  const sessionNumLogs = logs.filter(l => l.jornadaId === curJid && l.cuentaNum);
+  const nextNum = curJid
+    ? Math.max(0, ...sessionCuentas.map(c => c.num), ...sessionNumLogs.map(l => l.cuentaNum)) + 1
+    : 1;
 
   const handleLogin = () => {
     const emp = employees.find(e => e.pin === pin);
@@ -1387,8 +1465,22 @@ export default function App() {
   };
 
   const handleAbrirCuenta = (tipo, comentario) => {
+    // Start a new jornada automatically if none is open. The jornada's date is
+    // the calendar date of THIS first account — that's the day everything in
+    // this session (even sales after midnight) will be attributed to.
+    let aj = jornada;
+    if (!jornada?.activa) {
+      aj = { activa: true, id: "j_" + Date.now(), date: dayKey(), abiertaHora: nowStr() };
+      setJornada(aj);
+      fsSetJornada(aj);
+    }
+    // Compute this session's next account number from the (possibly new) jornada
+    const sc = cuentas.filter(c => c.jornadaId === aj.id);
+    const sl = logs.filter(l => l.jornadaId === aj.id && l.cuentaNum);
+    const num = Math.max(0, ...sc.map(c => c.num), ...sl.map(l => l.cuentaNum)) + 1;
+
     const nueva = {
-      id: String(Date.now()), num: nextNum, date: todayStr(),
+      id: String(Date.now()), num, date: aj.date, jornadaId: aj.id,
       tipo, comentario, abiertaPor: currentUser.name, userId: currentUser.id,
       horaAbierta: nowStr(), envios: [], discountPct: 0, discountInfo: null,
     };
@@ -1403,6 +1495,9 @@ export default function App() {
     fsUpdateCuenta(updated);
   };
 
+  // All logs below are stamped with the CUENTA's own date + jornadaId, NOT the
+  // clock's current date. This is what keeps a sale rung up at 1am attributed
+  // to the business day that opened the evening before.
   const handleCobrar = (pago) => {
     const cuenta   = selectedCuenta;
     const allItems = cuenta.envios.flatMap(e => e.items);
@@ -1410,7 +1505,7 @@ export default function App() {
     const neta     = cuentaNeta(cuenta);
     setSelectedCuenta(null);
     setScreen("cuentas");
-    fsAddLog({ type: "cobro", date: todayStr(), time: nowStr(), cuentaNum: cuenta.num, by: currentUser.name, items: allItems, bruta, neta, pago });
+    fsAddLog({ type: "cobro", date: cuenta.date, time: nowStr(), jornadaId: cuenta.jornadaId, cuentaNum: cuenta.num, by: currentUser.name, items: allItems, bruta, neta, pago });
     fsRemoveCuenta(cuenta.id);
   };
 
@@ -1418,7 +1513,7 @@ export default function App() {
     const cuenta = selectedCuenta;
     setSelectedCuenta(null);
     setScreen("cuentas");
-    fsAddLog({ type: "cancel", date: todayStr(), time: nowStr(), cuentaNum: cuenta.num, by: currentUser.name, motivo: "Cuenta vacía cerrada" });
+    fsAddLog({ type: "cancel", date: cuenta.date, time: nowStr(), jornadaId: cuenta.jornadaId, cuentaNum: cuenta.num, by: currentUser.name, motivo: "Cuenta vacía cerrada" });
     fsRemoveCuenta(cuenta.id);
   };
 
@@ -1434,7 +1529,7 @@ export default function App() {
       setSelectedCuenta(updated);
       fsUpdateCuenta(updated);
       fsAddLog({
-        type: "descuento", date: todayStr(), time: nowStr(),
+        type: "descuento", date: cuenta.date, time: nowStr(), jornadaId: cuenta.jornadaId,
         cuentaNum: cuenta.num, by: currentUser.name,
         scope: "cuenta", globalPct: data.globalPct, monto, motivo, nombre,
       });
@@ -1464,7 +1559,7 @@ export default function App() {
 
     const logItems = lines.map(l => ({ ...l.item, qty: l.qty, descPct: l.pct, descMonto: (l.item.price * l.qty) * l.pct / 100 }));
     fsAddLog({
-      type: "descuento", date: todayStr(), time: nowStr(),
+      type: "descuento", date: cuenta.date, time: nowStr(), jornadaId: cuenta.jornadaId,
       cuentaNum: cuenta.num, by: currentUser.name,
       scope: "producto", items: logItems, motivo, nombre,
     });
@@ -1492,10 +1587,43 @@ export default function App() {
 
     // Log the elimination for the owner (resumen / productos / movimientos)
     fsAddLog({
-      type: "eliminacion", date: todayStr(), time: nowStr(),
+      type: "eliminacion", date: cuenta.date, time: nowStr(), jornadaId: cuenta.jornadaId,
       cuentaNum: cuenta.num, by: currentUser.name,
       items: removedItems, motivo, nombre,
     });
+  };
+
+  // ── HACER CORTE DEL DÍA (manual) ──────────────────────────────────────────
+  // Closes the current session. Blocks if any account is still uncobrada, so
+  // nothing gets lost. Writes a "corte" snapshot log for the record, then marks
+  // the jornada inactive — the next account opened will start a fresh session.
+  const handleCorte = () => {
+    if (!jornada?.activa) return;
+    const jid = jornada.id;
+    const pend = cuentas.filter(c => c.jornadaId === jid);
+    if (pend.length > 0) {
+      alert("Aún hay cuentas sin cobrar en esta jornada. Cóbralas o ciérralas antes de hacer el corte.");
+      return;
+    }
+    const jLogs = logs.filter(l => l.jornadaId === jid && l.type === "cobro");
+    const bruta         = jLogs.reduce((s, o) => s + (o.bruta || 0), 0);
+    const neta          = jLogs.reduce((s, o) => s + (o.neta || 0), 0);
+    const efectivo      = jLogs.reduce((s, o) => s + (o.pago?.efectivo || 0), 0);
+    const tarjeta       = jLogs.reduce((s, o) => s + (o.pago?.tarjeta || 0), 0);
+    const transferencia = jLogs.reduce((s, o) => s + (o.pago?.transferencia || 0), 0);
+    const propinas      = jLogs.reduce((s, o) => s + (o.pago?.propina || 0), 0);
+
+    fsAddLog({
+      type: "corte", date: jornada.date, time: nowStr(), jornadaId: jid,
+      by: currentUser?.name || "Dueño",
+      abiertaHora: jornada.abiertaHora, cerradaHora: nowStr(),
+      bruta, neta, efectivo, tarjeta, transferencia, propinas, cobros: jLogs.length,
+    });
+
+    const closed = { activa: false, id: null, date: null, abiertaHora: null };
+    setJornada(closed);
+    fsSetJornada(closed);
+    alert("Corte del día realizado ✓");
   };
 
   // ── Loading gate: wait for first Firestore sync before showing anything
@@ -1520,7 +1648,7 @@ export default function App() {
 
   if (screen === "owner") return (
     <OwnerPanel logs={logs} employees={employees} setEmployees={setEmployeesSynced} menu={menu} setMenu={setMenuSynced}
-      cuentas={cuentas} todayKey={todayStr()}
+      cuentas={cuentas} jornada={jornada} onCorte={handleCorte}
       onBack={() => { setScreen("login"); setCurrentUser(null); }} />
   );
 
@@ -1534,8 +1662,9 @@ export default function App() {
       onCerrarCuenta={handleCerrarCuenta} />
   );
 
-  // CUENTAS LIST — each user sees only their own open accounts
-  const misCuentas = cuentas.filter(c => c.date === todayStr() && c.userId === currentUser?.id);
+  // CUENTAS LIST — each user sees only their own open accounts of the CURRENT
+  // session (jornada), so accounts don't vanish at midnight anymore.
+  const misCuentas = cuentas.filter(c => c.jornadaId === curJid && c.userId === currentUser?.id);
 
   return (
     <div style={{ fontFamily: "'Inter',sans-serif", background: C.bg, minHeight: "100vh", color: "#fff", maxWidth: 480, margin: "0 auto", display: "flex", flexDirection: "column" }}>
