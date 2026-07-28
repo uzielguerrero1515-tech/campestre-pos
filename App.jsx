@@ -4,7 +4,7 @@ import {
   getFirestore, collection, doc, setDoc, deleteDoc,
   onSnapshot, query, orderBy,
 } from "firebase/firestore";
-
+import { getAuth, signInAnonymously } from "firebase/auth";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyB-Pg5OPycsGK4klRD5lwrfmLdGeCVcgOY",
@@ -16,7 +16,7 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
-
+signInAnonymously(getAuth(fbApp)).catch(e => console.error("Auth error:", e));
 // Firestore collection refs — everything lives under these collections
 const cuentasCol   = collection(db, "cuentas");
 const logsCol      = collection(db, "logs");
